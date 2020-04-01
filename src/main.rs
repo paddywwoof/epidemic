@@ -16,15 +16,16 @@ use std::io::BufReader;
 struct ConstVals {
     n: usize,
     sz: usize,
-    age_dist: [usize; 16],
-    age_vals: [[u32; 3]; 8],
-    city_sizes: [u32; 27],
+    age_dist: Vec<usize>,
+    age_vals: Vec<[u32; 3]>,
+    city_sizes: Vec<u32>,
     start_seed: usize,
     n_steps: u32,
-    lockdown_start: u32,
-    lockdown_end: u32,
+    lockdown_start: Vec<u32>,
+    lockdown_end: Vec<u32>,
     to_peak: u32,
     cell_threshold: u8,
+    jump_threshold: u32,
     noninfective: u32,
     save_images: bool,
     image_size: u32,
@@ -34,7 +35,7 @@ struct ConstVals {
 /// random walk, band is centred on target, probability of step towards target
 /// increases nearer x is to the edge. returns -1, 0 or +1
 fn rand_step(rng: &mut ThreadRng, x: i32, target: i32, band: u32) -> i32 {
-    if band == 0 || rng.gen_range(0, 2) == 0 { // 1 in 2 doesn't move
+    if band == 0 || rng.gen_range(0, 3) <= 1 { // 2 in 3 doesn't move
         return 0;
     }
     let half_band = (band as i32) / 2;
@@ -64,6 +65,7 @@ impl Point {
 struct Person {
     infect_start: Option<u32>, // None prior to infection ie no immunity
     severity: i32, // signed so subraction simpler 
+    max_severity: i32,
     dead: bool,
     posn: Point,
     home: Point,
@@ -74,6 +76,7 @@ impl Person {
         Person {
             infect_start: None,
             severity: 0,
+            max_severity: 0,
             dead: false,
             posn: Point::new(x, y),
             home: Point::new(x, y),
@@ -155,9 +158,15 @@ fn main() {
     let mut ninfd_vec: Vec<u32> = vec![];
     let mut nrecd_vec: Vec<u32> = vec![];
     let mut ndead_vec: Vec<u32> = vec![];
+    let mut lockdown_ix = 0;
     for k in 0..C.n_steps {
-        let mob_ix = if k >= C.lockdown_start && k < C.lockdown_end {
+        let mob_ix = if k >= C.lockdown_start[lockdown_ix]
+                     && k < C.lockdown_end[lockdown_ix] {
             1 } else {
+                if k >= C.lockdown_end[lockdown_ix]
+                        && (lockdown_ix + 1) < C.lockdown_start.len() {
+                    lockdown_ix += 1; // move on to checking next lockdown
+                }
             0 };
 
         if C.save_images {
@@ -176,9 +185,12 @@ fn main() {
                             let y = (pop[i].posn.y * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
                             imgbuf.put_pixel(x, y, image::Rgb([0u8, 128u8, 0u8]));//green=infection
                         }
-                        let target: i32 = if t > (C.to_peak + k) {10} else {0};
+                        let target: i32 = if k < (t + C.to_peak) {13} else {0};
                         pop[i].severity += rand_step(&mut rng, pop[i].severity, target, 30);
-                        if pop[i].severity >= C.age_vals[pop[i].age][2] as i32 {
+                        if pop[i].severity > pop[i].max_severity {
+                            pop[i].max_severity = pop[i].severity;
+                        }
+                        if pop[i].severity >= C.age_vals[pop[i].age][2] as i32 { //fatal!
                             pop[i].severity = 0;
                             pop[i].dead = true;
                             ndead += 1;
@@ -190,13 +202,13 @@ fn main() {
                 }
                 // then move around
                 let mobility = C.age_vals[pop[i].age][mob_ix];
-                if rng.gen_ratio(if mobility > 1 {mobility - 2} else {0}, 6) {
-                    let dice = rng.gen_range(0, 100);
+                if mobility >= C.jump_threshold && rng.gen_ratio(mobility, 10) {
+                    let dice = rng.gen_range(0, 200);
                     if dice <= mobility { // jump
                         let dest = &city_list[rng.gen_range(0, city_list.len())].centre;
                         pop[i].posn.x = dest.x;
                         pop[i].posn.y = dest.y;
-                    } else if dice < 25 { // chance of returning home
+                    } else if dice < 50 { // chance of returning home
                         pop[i].posn.x = pop[i].home.x;
                         pop[i].posn.y = pop[i].home.y;
                     }
@@ -219,7 +231,7 @@ fn main() {
                             Some(cell) => {
                                 if cell.infection > C.cell_threshold {
                                     pop[i].infect_start = Some(k);
-                                    pop[i].severity = 6; //TODO depends
+                                    pop[i].severity = 1; //TODO depends
                                 }
                             },
                             None => {},
@@ -263,8 +275,8 @@ fn main() {
 
         // attenuate contaminated cells and update with new contaminations
         for (_, cell) in grid.iter_mut() {
-            cell.infection -= cell.infection / 3; // virus declines by 1/3 each period
-            if cell.infection < 3 {
+            cell.infection -= cell.infection / 2; // virus declines by 1/2 each period
+            if cell.infection < 2 {
                 cell.infection = 0; // then goes completely
             }
             if cell.next_infection > cell.infection { // move over contamination this round
@@ -281,6 +293,14 @@ fn main() {
             (nrecd as f32) * factor,
             (ndead as f32) * factor
         );
+    }
+    let mut peak_histogram = vec![0; 20];
+    for i in 0..pop.len() {
+        peak_histogram[pop[i].max_severity as usize] += 1;
+    }
+    println!("histogram of peak severity through population");
+    for i in 0..peak_histogram.len() {
+        println!("{} {}", i, peak_histogram[i]);
     }
     //TODO split into threads
     //let i = rng.gen_range(0, C.n);
