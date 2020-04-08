@@ -9,20 +9,22 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
+use scoped_threadpool::Pool;
+use std::sync::{Arc, Mutex};
 
 ////////////////////////////////////////////////////////////////////////
 // constants.json info
-#[derive(Deserialize)]
+#[derive(Deserialize, Copy, Clone)]
 struct ConstVals {
     n: usize,
     sz: usize,
-    age_dist: Vec<usize>,
-    age_vals: Vec<[u32; 3]>,
-    city_sizes: Vec<u32>,
+    age_dist: [usize;16],
+    age_vals: [[u32; 3];8],
+    city_sizes: [u32;27],
     start_seed: usize,
     n_steps: u32,
-    lockdown_start: Vec<u32>,
-    lockdown_end: Vec<u32>,
+    lockdown_start: [u32;8],
+    lockdown_end: [u32;8],
     to_peak: u32,
     cell_threshold: u8,
     jump_threshold: u32,
@@ -119,13 +121,16 @@ impl City {
 //
 ///////////////////////////////////////////////////////////////////////////////
 fn main() {
+    // scoped thread_pool
+    let mut pool = Pool::new(4);
     // load constants from json file (in 'current' directory)
     let file = File::open("constants.json").unwrap();
     let reader = BufReader::new(file);
     let C:ConstVals = serde_json::from_reader(reader).unwrap();
     // setup grid, city_list and population
     let mut rng = thread_rng();
-    let mut grid: HashMap<(i32, i32), Cell> = HashMap::with_capacity(C.sz * C.sz);
+    let grid: Arc<Mutex<HashMap<(i32, i32), Cell>>> = Arc::new(Mutex::new(
+            HashMap::with_capacity(C.sz * C.sz)));
     let mut city_list = Vec::<City>::with_capacity(C.city_sizes.len());
     let mut pop = Vec::<Person>::with_capacity(C.n);
     // 80% of population in cities
@@ -140,6 +145,7 @@ fn main() {
         }
         city_list.push(city);
     }
+    let city_list: Arc<Mutex<Vec<City>>> = Arc::new(Mutex::new(city_list));
     for i in pop.len()..C.n {
         let x = rng.gen_range(0, C.sz) as i32;
         let y = rng.gen_range(0, C.sz) as i32;
@@ -154,7 +160,8 @@ fn main() {
     }
     // random walk population
     println!("     day, infected%, recovred%,     dead%");
-    let mut imgbuf = image::ImageBuffer::new(C.image_size, C.image_size);
+    let imgbuf = Arc::new(Mutex::new(
+        image::ImageBuffer::new(C.image_size, C.image_size)));
     let mut ninfd_vec: Vec<u32> = vec![];
     let mut nrecd_vec: Vec<u32> = vec![];
     let mut ndead_vec: Vec<u32> = vec![];
@@ -169,93 +176,128 @@ fn main() {
                 }
             0 };
 
-        if C.save_images {
-            imgbuf = image::ImageBuffer::new(C.image_size, C.image_size);
-        }
-        let mut ninfd: u32 = 0;//num infected
-        let mut nrecd: u32 = 0;//num recovered
-        let mut ndead: u32 = 0;//num dead
-        for i in 0..pop.len() {
-            // TODO progress infection, kill off or recover
-            if pop[i].infect_start == None || pop[i].severity > 0 { //not caught it yet or still ill
-                match pop[i].infect_start {
-                    Some(t) => { // i.e. severity must be > 0
-                        if C.save_images {
-                            let x = (pop[i].posn.x * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
-                            let y = (pop[i].posn.y * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
-                            imgbuf.put_pixel(x, y, image::Rgb([0u8, 128u8, 0u8]));//green=infection
-                        }
-                        let target: i32 = if k < (t + C.to_peak) {13} else {0};
-                        pop[i].severity += rand_step(&mut rng, pop[i].severity, target, 30);
-                        if pop[i].severity > pop[i].max_severity {
-                            pop[i].max_severity = pop[i].severity;
-                        }
-                        if pop[i].severity >= C.age_vals[pop[i].age][2] as i32 { //fatal!
-                            pop[i].severity = 0;
-                            pop[i].dead = true;
-                            ndead += 1;
-                        } else {
-                            ninfd += 1;
-                        }
-                    },
-                    _ => {} 
-                }
-                // then move around
-                let mobility = C.age_vals[pop[i].age][mob_ix];
-                if mobility >= C.jump_threshold && rng.gen_ratio(mobility, 10) {
-                    let dice = rng.gen_range(0, 200);
-                    if dice <= mobility { // jump
-                        let dest = &city_list[rng.gen_range(0, city_list.len())].centre;
-                        pop[i].posn.x = dest.x;
-                        pop[i].posn.y = dest.y;
-                    } else if dice < 50 { // chance of returning home
-                        pop[i].posn.x = pop[i].home.x;
-                        pop[i].posn.y = pop[i].home.y;
-                    }
-                }
-                pop[i].posn.x += rand_step(&mut rng, pop[i].posn.x, pop[i].home.x, mobility);
-                pop[i].posn.y += rand_step(&mut rng, pop[i].posn.y, pop[i].home.y, mobility);
-                let key = (pop[i].posn.x, pop[i].posn.y);
-                match pop[i].infect_start {
-                    Some(t) => { // already infected - pass it on if after incubation
-                        if k > (t + C.noninfective) {
-                            let cell = grid.entry(key).or_insert(Cell::new());
-                            let delta = pop[i].severity as u8;
-                            if (cell.next_infection as u32) + (delta as u32) < 255 {
-                                cell.next_infection += delta;
-                            }
-                        }
-                    },
-                    None => { // not infected, check grid cell
-                        match grid.get(&key) {//TODO depends
-                            Some(cell) => {
-                                if cell.infection > C.cell_threshold {
-                                    pop[i].infect_start = Some(k);
-                                    pop[i].severity = 1; //TODO depends
-                                }
-                            },
-                            None => {},
-                        }
-                    }
-                }
-            } else { // caught it but severity now 0. either dead or immune!
-                if pop[i].dead {
-                    ndead += 1;
-                    if C.save_images { // draw a white dot for a death
-                        let x = (pop[i].posn.x * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
-                        let y = (pop[i].posn.y * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
-                        imgbuf.put_pixel(x, y, image::Rgb([255u8, 255u8, 255u8]));//red=dead
-                    }
-                } else {
-                    nrecd += 1;
+        if C.save_images { // clear image
+            let mut imgbuf = imgbuf.lock().unwrap();
+            for y in 0..C.image_size {
+                for x in 0..C.image_size {
+                    imgbuf.put_pixel(x, y, image::Rgb([0u8, 0u8, 0u8]));
                 }
             }
         }
+        let ninfd: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));//num infected
+        let nrecd: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));//num recovered
+        let ndead: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));//num dead
+
+        pool.scoped(|scoped| {
+            for p in &mut pop {
+                let city_list = Arc::clone(&city_list);
+                let grid = Arc::clone(&grid);
+                let ninfd = Arc::clone(&ninfd);
+                let nrecd = Arc::clone(&nrecd);
+                let ndead = Arc::clone(&ndead);
+                let imgbuf = Arc::clone(&imgbuf);
+
+                scoped.execute(move || {
+                    //let C = &C.clone(); //normal clone?
+                    let mut rng = thread_rng();
+                    // TODO progress infection, kill off or recover
+                    if p.infect_start == None || p.severity > 0 { //not caught it yet or still ill
+                        match p.infect_start {
+                            Some(t) => { // i.e. severity must be > 0
+                                if C.save_images {
+                                    let x = (p.posn.x * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
+                                    let y = (p.posn.y * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
+                                    let mut imgbuf = imgbuf.lock().unwrap();
+                                    imgbuf.put_pixel(x, y, image::Rgb([0u8, 128u8, 0u8]));//green=infection
+                                }
+                                let target: i32 = if k < (t + C.to_peak) {13} else {0};
+                                p.severity += rand_step(&mut rng, p.severity, target, 30);
+                                if p.severity > p.max_severity {
+                                    p.max_severity = p.severity;
+                                }
+                                if p.severity >= C.age_vals[p.age][2] as i32 { //fatal!
+                                    p.severity = 0;
+                                    p.dead = true;
+                                    let mut ndead = ndead.lock().unwrap();
+                                    *ndead += 1;
+                                } else {
+                                    let mut ninfd = ninfd.lock().unwrap();
+                                    *ninfd += 1;
+                                }
+                            },
+                            _ => {} 
+                        }
+                        // then move around
+                        let mobility = C.age_vals[p.age][mob_ix];
+                        if mobility >= C.jump_threshold && rng.gen_ratio(mobility, 10) {
+                            let dice = rng.gen_range(0, 200);
+                            if dice <= mobility { // jump
+                                let city_list = city_list.lock().unwrap();
+                                let dest = &city_list[rng.gen_range(0, city_list.len())].centre;
+                                p.posn.x = dest.x;
+                                p.posn.y = dest.y;
+                            } else if dice < 50 { // chance of returning home
+                                p.posn.x = p.home.x;
+                                p.posn.y = p.home.y;
+                            }
+                        }
+                        p.posn.x += rand_step(&mut rng, p.posn.x, p.home.x, mobility);
+                        p.posn.y += rand_step(&mut rng, p.posn.y, p.home.y, mobility);
+                        let key = (p.posn.x, p.posn.y);
+                        let mut grid = grid.lock().unwrap();
+                        match p.infect_start {
+                            Some(t) => { // already infected - pass it on if after incubation
+                                if k > (t + C.noninfective) {
+                                    let cell = grid.entry(key).or_insert(Cell::new());
+                                    let delta = p.severity as u8;
+                                    if (cell.next_infection as u32) + (delta as u32) < 255 {
+                                        cell.next_infection += delta;
+                                    }
+                                }
+                            },
+                            None => { // not infected, check grid cell
+                                match grid.get(&key) {//TODO depends
+                                    Some(cell) => {
+                                        if cell.infection > C.cell_threshold {
+                                            p.infect_start = Some(k);
+                                            p.severity = 1; //TODO depends
+                                        }
+                                    },
+                                    None => {},
+                                }
+                            }
+                        }
+                    } else { // caught it but severity now 0. either dead or immune!
+                        if p.dead {
+                            {
+                                let mut ndead = ndead.lock().unwrap();
+                                *ndead += 1;
+                            }
+                            if C.save_images { // draw a white dot for a death
+                                let x = (p.posn.x * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
+                                let y = (p.posn.y * C.image_size as i32 / C.sz as i32) as u32 % C.image_size;
+                                let mut imgbuf = imgbuf.lock().unwrap();
+                                imgbuf.put_pixel(x, y, image::Rgb([255u8, 255u8, 255u8]));//red=dead
+                            }
+                        } else {
+                            let mut nrecd = nrecd.lock().unwrap();
+                            *nrecd += 1;
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut grid = grid.lock().unwrap();
+        let ninfd = ninfd.lock().unwrap();
+        let nrecd = nrecd.lock().unwrap();
+        let ndead = ndead.lock().unwrap();
         if C.save_images {
+            let mut imgbuf = imgbuf.lock().unwrap();
             if k >= 1 {
-                ninfd_vec.push(ninfd);
-                nrecd_vec.push(nrecd);
-                ndead_vec.push(ndead);
+                ninfd_vec.push(*ninfd);
+                nrecd_vec.push(*nrecd);
+                ndead_vec.push(*ndead);
                 for q in 0..ninfd_vec.len() {
                     let x: u32 = q as u32 * C.image_size / C.n_steps;
                     let y_ninfd = C.image_size - ninfd_vec[q] * C.image_size / C.n  as u32 - 10;
@@ -289,20 +331,17 @@ fn main() {
         }
         let factor = 100.0 / (C.n as f32); // as % of total population
         println!("{:8}, {:8.2}%, {:8.2}%, {:8.2}%",
-            k, (ninfd as f32) * factor,
-            (nrecd as f32) * factor,
-            (ndead as f32) * factor
+            k, (*ninfd as f32) * factor,
+            (*nrecd as f32) * factor,
+            (*ndead as f32) * factor
         );
     }
     let mut peak_histogram = vec![0; 20];
-    for i in 0..pop.len() {
-        peak_histogram[pop[i].max_severity as usize] += 1;
+    for p in &mut pop {
+        peak_histogram[p.max_severity as usize] += 1;
     }
     println!("histogram of peak severity through population");
     for i in 0..peak_histogram.len() {
         println!("{} {}", i, peak_histogram[i]);
     }
-    //TODO split into threads
-    //let i = rng.gen_range(0, C.n);
-    //println!("{} -> {:?} {:?}", i, pop[i].home.x, pop[i].age);
 }
