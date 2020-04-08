@@ -28,12 +28,14 @@ which is loaded each time the program runs:
 
         # age distribution 0=>first decade 0-9, 1=>10-19, 2=>20-29 etc
         # so there are likely to be three times as many 30-39 as 70-79
+        # must be 16 entries in this list
         "age_dist": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7],
 
         # there is one line for each decade in the age distribution
         # the first column is mobility to start with
         # the second col is mobility during lockdown
         # the third col is resistance to the virus
+        # must be 8 entries, three values in each.
         "age_vals": [[2, 0, 14],
                     [4, 0, 13],
                     [6, 0, 12],
@@ -44,6 +46,7 @@ which is loaded each time the program runs:
                     [2, 0, 10]],
 
         # city w,h in grid units. Each entry is a city/town/village
+        # must be 27 entries in this list
         "city_sizes": [40, 20, 20, 20,
                     10, 10, 10, 10, 10, 5, 5, 5, 5, 5,
                     5,  5,  5,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -55,7 +58,7 @@ which is loaded each time the program runs:
         "n_steps": 200,
 
         # list of lockdown starts and ends.
-        # must match i.e same number and end after or equal to start and before
+        # must have six entries in each list and end after or equal to start and before
         # next start
         "lockdown_start": [40, 70, 100, 130, 160],
         "lockdown_end": [60, 90, 120, 150, 180],
