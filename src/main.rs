@@ -130,7 +130,7 @@ fn main() {
     // setup grid, city_list and population
     let mut rng = thread_rng();
     let grid: Arc<Mutex<HashMap<(i32, i32), Cell>>> = Arc::new(Mutex::new(
-            HashMap::with_capacity(C.sz * C.sz)));
+            HashMap::with_capacity(C.sz * C.sz / 8)));
     let mut city_list = Vec::<City>::with_capacity(C.city_sizes.len());
     let mut pop = Vec::<Person>::with_capacity(C.n);
     // 80% of population in cities
