@@ -84,3 +84,10 @@ There are probably lots of non-realistic features to this simulation, however it
 does give a feeling for the impact of travel restrictions on the spread of the
 disease and the final death toll. (Spoiler: the final figures generally remain
 the same - just takes longer to get there)
+
+To convert the frames into an animation you can run this in the same folder as
+the ``epidemic`` executable::
+
+    ffmpeg -i frames/fr%03d.jpg -c:v libx264 -vf fps=5 -pix_fmt yuv420p animation.mp4
+
+Obviously ffmpeg will have to be installed on your machine.
