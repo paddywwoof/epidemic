@@ -94,3 +94,5 @@ the ``epidemic`` executable::
     ffmpeg -i frames/fr%03d.jpg -c:v libx264 -vf fps=5 -pix_fmt yuv420p animation.mp4
 
 Obviously ffmpeg will have to be installed on your machine.
+
+<img src="https://github.com/paddywwoof/epidemic/blob/master/target/release/frames/fr099.jpg">
